@@ -1,0 +1,244 @@
+---
+title: "Diagnosis date analysis"
+author: "COQ Matthieu/DOGAY Yagmur"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    self_contained: yes
+    keep_md: yes
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# RIV
+
+The objective is to detect pattern or trend in the recruitment of the patient
+
+```{r, fig.width=10, fig.height=8}
+library(ggplot2)
+library(knitr)
+library(CptPointProcess)
+# library(rivpipeline)
+library(sas7bdat)
+#rkd_file <- "C:/Users/COQM/OneDrive - Trinity College Dublin/Matthieu Coq/Diagnosis Date analysis/danish cohort/cluster_danish_data (3).sas7bdat"
+rkd_file <- "cluster_danish_data (3).sas7bdat"
+rkd <- read.sas7bdat(rkd_file)
+
+rkd_filter=rkd
+
+rkd_filter$Date.of.diagnosis= as.Date("1960-01-01") + rkd_filter$mid_date
+
+rkd_selected=rkd_filter
+
+rkd_selected=rkd_selected[order(rkd_selected$Date.of.diagnosis),]
+
+
+
+library(lubridate)
+
+barplot(table(day(rkd_selected$Date.of.diagnosis)),main="Distribution of days")
+
+barplot(table(month(rkd_selected$Date.of.diagnosis)),main="Distribution of months")
+
+barplot(table(year(rkd_selected$Date.of.diagnosis)),main="Distribution of years")
+
+
+plot(rkd_selected$Date.of.diagnosis,1:length(rkd_selected$Date.of.diagnosis),type='s',ylab="", xlab="Date of Diagnosis")
+
+```
+
+The above graphics shows the inclusion rate.
+
+```{r, fig.width=10, fig.height=8}
+rkd_selected$Interval_in_day=as.numeric(rkd_selected$Date.of.diagnosis-rkd_selected$Date.of.diagnosis[1])
+
+```
+
+
+
+The 2 graphics above show the distribution of the interval of time. 
+A changepoint model based on Poisson process is applied to find cluster of inclusion rate. 
+
+```{r}
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = F)
+plot(Res.Seg$Contrast + (1:10)*log(nrow(dat))) ## use BIC because cross-validation breaks for these data 
+
+
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = T)
+Res.Seg$SegK
+
+#png("RIV changepoint plot.png", width = 6, height = 6, units = 'in', res = 3000)
+graphics::par(new=FALSE)
+plot(rkd_selected$Date.of.diagnosis,1:length(rkd_selected$Date.of.diagnosis),type='s',ylab="Number of patient included", xlab="Date of Diagnosis")
+points(rkd_selected$Date.of.diagnosis, rep(0,length(rkd_selected$Date.of.diagnosis)),pch=20)
+if (nrow(Res.Seg$SegK)!=1){
+  graphics::abline(v=as.Date(Res.Seg$SegK$end*3998.5,min(rkd_selected$Date.of.diagnosis))[1:(length(as.Date(Res.Seg$SegK$end*3998.5,min(rkd_selected$Date.of.diagnosis)))-1)], col=2, lty=2)
+}
+
+graphics:: par(new=TRUE)
+graphics::plot(0, xlim=c(min(rkd_selected$Date.of.diagnosis), max(rkd_selected$Date.of.diagnosis)), ylim=c(0, 250), col=0,
+               xlab=NA, ylab=NA, main=NA, axes=FALSE)
+for(k in 1:nrow(Res.Seg$SegK)){
+  graphics::lines(c(as.Date(Res.Seg$SegK$begin[k]*3998.5,min(rkd_selected$Date.of.diagnosis)), as.Date(Res.Seg$SegK$end[k]*3998.5,min(rkd_selected$Date.of.diagnosis))), (Res.Seg$SegK$lambda[k]*365/3998.5)*c(1, 1), col=2, lwd=2)
+}
+graphics::axis(side=4, col=2, col.ticks=2, col.axis=2)
+mtext("rate per year", side=4,col=2,line=-1)
+#dev.off()
+```
+
+
+The modelisation of the changepoint model through a exponential distribution works well.
+
+## Interval between diagnosis date
+
+We calculate the interval in days between the a diagnosis data and the following one.
+
+```{r, fig.width=10, fig.height=8}
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+
+```
+
+
+
+
+
+
+
+```{r}
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = T)
+SegK <- Res.Seg$SegK
+
+K <- length(SegK$end)
+tau_vec <- c(0, SegK$end)*(max(rkd_selected$Interval_in_day)+2)
+tau_vec[K+1] <- tau_vec[K+1] - 2
+# tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+n = length(rkd_selected$Interval_in_day)
+
+# tsim <- rep(0, n)
+simChDat <- function(SegK){
+  K <- length(SegK$lambda)
+  x0 <- 0
+  for(k in 1:K){
+    # sel_1 <- rkd_selected$Interval_in_day >= tau_vec[k]
+    # sel_2 <- rkd_selected$Interval_in_day < tau_vec[k+1]
+    # nk <- sum(sel_1 & sel_2)
+    # tsim1 <- rexp(n, (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])  
+    daily_lambda_k <- SegK$lambda[k] / (max(rkd_selected$Interval_in_day))
+    ## Mimic data collection process - averaged to preserve privacy 
+    tsim1 <- rexp(3*n, daily_lambda_k)
+    tmat <- matrix(tsim1, nrow = 3)
+    tsim <- colMeans(tmat)
+    sel <- (cumsum(tsim) + max(x0)) < tau_vec[k+1]
+    x0 = c(x0, max(x0) + cumsum(tsim[sel]))
+  }
+  # x0 <- x0[-1]
+  
+  # plot(y = 1:length(rkd_selected$Interval_in_day), x = x0, type="s", lwd = 1,xlab="Interval in day", ylab="")
+  # abline(v=tau_vec, col="red")
+  x0
+}
+
+x0 <- simChDat(SegK)
+
+nsim <- length(x0)
+
+x0mat <- replicate(5000, simChDat(SegK))
+x0 <- x0mat[[1]]
+nsim <- length(x0)
+plot(ecdf(round(diff(x0))), lwd = 1,xlab="Days", ylab="P(t < T)", col = 3, main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE)
+#abline(v=tau_vec, col="red")
+test2=quantile(ecdf(round(diff(x0))),seq(0,1,0.1))
+for(i in 2:5000){
+  
+  # tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+  # n = length(rkd_selected$Interval_in_day)
+  # tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+  # x = cumsum(tsim1)
+  # x <- x[x< tau]
+  # tsim2 <- rexp(n - length(x), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+  # x <- c(x, max(x) + cumsum(tsim2))
+  # lines(y = 1:n, x = x, type="s", col = 3)
+  
+  x0 <- x0mat[[i]]
+  nsim <- length(x0)
+  lines(ecdf(round(diff(x0))), col = 3, do.points = FALSE)
+  test2=rbind(test2,quantile(ecdf(round(diff(x0))),seq(0,1,0.1)))
+}
+test3=colMeans(test2)
+lines(ecdf(rkd_selected$Interval),col=1)
+```
+
+```{r}
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+ysim <- round(diff(x0))
+exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+c1 <- chisq.test(tab1, p = exp_sim)
+print(c1)
+barplot(c1$stdres)
+
+#png("RIV plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(round(diff(x0))), lwd = 1,xlab="Days", ylab="P(t < T)", col = 3, main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE,xlim=c(0,100))
+#abline(v=tau_vec, col="red")
+test2=quantile(ecdf(round(diff(x0))),seq(0,1,0.1))
+pvalue=NULL
+resi=NULL
+ysim <- round(diff(x0))
+exp_sim_total=table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+for(i in 2:5000){
+  
+  # tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+  # n = length(rkd_selected$Interval_in_day)
+  # tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+  # x = cumsum(tsim1)
+  # x <- x[x< tau]
+  # tsim2 <- rexp(n - length(x), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+  # x <- c(x, max(x) + cumsum(tsim2))
+  # lines(y = 1:n, x = x, type="s", col = 3)
+  
+  x0 <- x0mat[[i]]
+  nsim <- length(x0)
+  lines(ecdf(round(diff(x0))), col = "gray", do.points = FALSE)
+  test2=rbind(test2,quantile(ecdf(round(diff(x0))),seq(0,1,0.1)))
+  ysim <- round(diff(x0))
+  exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+  c1 <- chisq.test(tab1, p = exp_sim)
+  resi=rbind(resi, c1$stdres)
+  pvalue=c(pvalue, c1$p.value)
+  exp_sim_total=exp_sim_total+table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+
+}
+test3=colMeans(test2)
+lines(ecdf(rkd_selected$Interval),col=1)
+#dev.off()
+boxplot(pvalue,main="distribution of the p-value of the Chi-squared test",outline=F)
+boxplot(resi, main= "distribution of the residual error of the Chi-squared test", outline=F)
+
+exp_sim_total=exp_sim_total/sum(exp_sim_total)
+print(exp_sim_total)
+print(tab1)
+c1_overall <- chisq.test(tab1, p = exp_sim_total)
+saveRDS(c1_overall, file="RIV Chisq test")
+print(c1_overall)
+print(c1_overall$p.value)
+barplot(c1_overall$stdres, main = "Chi-squared test residuals")
+```
+
+
+
+

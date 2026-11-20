@@ -1,0 +1,1171 @@
+---
+title: "Diagnosis date analysis"
+author: "COQ Matthieu/DOGAY Yagmur"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    self_contained: yes
+    keep_md: yes
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# RIV
+
+The objective is to detect pattern or trend in the recruitment of the patient
+
+```{r, fig.width=10, fig.height=8}
+library(ggplot2)
+library(knitr)
+library(CptPointProcess)
+library(rivpipeline)
+rkd_file <- "C:/Users/COQM/OneDrive - Trinity College Dublin/Redcap Data exports/RareKidneyDiseaseRIT-PARADISE_DATA_LABELS_2026-09-28_1331.csv"
+rkd <- read.csv(rkd_file,header=T)
+output_dir <- tempdir()
+split_RKD <- SplitRIV(rkd, output_dir)
+Inclusion_Criteria_rkd <- FilterRIV(split_RKD$Initial, tempdir(),c("Definite GPA", "Definite MPA"))
+
+rkd_filter <- Inclusion_Criteria_rkd[,c("RKD.ID", "Gender", "Age.at.diagnosis", "Date.of.diagnosis", "Date.of.Initial.Consent", "Small.vessel.vasculitis..ANCA.associated.", "At.any.point.ANCA.specificity")]
+
+rkd_filter$Date.of.diagnosis=as.Date(rkd_filter$Date.of.diagnosis)
+rkd_filter$Date.of.Initial.Consent=as.Date(rkd_filter$Date.of.Initial.Consent)
+
+rkd_selected=rkd_filter[which(rkd_filter$Date.of.diagnosis>=as.Date("2013-01-01") & rkd_filter$Date.of.diagnosis<as.Date("2024-04-01")),]
+
+rkd_selected=rkd_selected[order(rkd_selected$Date.of.diagnosis),]
+
+rkd_selected$type.of.recruitment = NULL
+for (i in 1:nrow(rkd_selected)){
+  if(is.na(rkd_selected$Date.of.Initial.Consent[i])==F){
+    if(abs(rkd_selected$Date.of.diagnosis[i] - rkd_selected$Date.of.Initial.Consent[i])>30 ){
+    rkd_selected$type.of.recruitment[i]="retrospective"
+  }else{
+    rkd_selected$type.of.recruitment[i]="prospective"
+  }
+  }
+  
+}
+
+
+
+library(lubridate)
+
+barplot(table(day(rkd_selected$Date.of.diagnosis)),main="Distribution of days")
+
+barplot(table(month(rkd_selected$Date.of.diagnosis)),main="Distribution of months")
+
+barplot(table(year(rkd_selected$Date.of.diagnosis)),main="Distribution of years")
+
+barplot(table(rkd_selected$type.of.recruitment,day(rkd_selected$Date.of.diagnosis)),col=rainbow(2))
+
+barplot(table(rkd_selected$type.of.recruitment,year(rkd_selected$Date.of.diagnosis)),col=rainbow(2))
+
+rkd_selected=rkd_selected[which(rkd_selected$type.of.recruitment == "prospective"),]
+
+png("RIV cohort plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(rkd_selected$Date.of.diagnosis,1:length(rkd_selected$Date.of.diagnosis),type='s',ylab="", xlab="Date of Diagnosis")
+dev.off()
+```
+
+The above graphics shows the inclusion rate.
+
+```{r, fig.width=10, fig.height=8}
+rkd_selected$Interval_in_day=as.numeric(rkd_selected$Date.of.diagnosis-rkd_selected$Date.of.diagnosis[1])
+
+for (i in 1:317){
+  if (rkd_selected$Small.vessel.vasculitis..ANCA.associated.[i]=="Microscopic polyangiitis (including renal limited vasculitis) - ORPHA:727"){
+    rkd_selected$Small.vessel.vasculitis..ANCA.associated.[i]="MPA"
+  }else{
+    rkd_selected$Small.vessel.vasculitis..ANCA.associated.[i]="GPA"
+  }
+}
+
+rkd_selected=rkd_selected[which(rkd_selected$Small.vessel.vasculitis..ANCA.associated.=="MPA"),]
+
+```
+
+
+ 
+
+```{r}
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = F)
+plot(Res.Seg$Contrast + (1:10)*log(nrow(dat))) ## use BIC because cross-validation breaks for these data 
+
+
+Res.Seg=CptPointProcess(dat, Kmax=4, selection = F)
+Res.Seg$SegK
+
+#png("RIV MPA changepoint plot.png", width = 6, height = 6, units = 'in', res = 3000)
+graphics::par(new=FALSE)
+plot(rkd_selected$Date.of.diagnosis,1:length(rkd_selected$Date.of.diagnosis),type='s',ylab="Number of patient included", xlab="Date of Diagnosis")
+points(rkd_selected$Date.of.diagnosis, rep(0,length(rkd_selected$Date.of.diagnosis)),pch=20)
+if (nrow(Res.Seg$SegK)!=1){
+  graphics::abline(v=as.Date(Res.Seg$SegK$end*3969,min(rkd_selected$Date.of.diagnosis))[1:(length(as.Date(Res.Seg$SegK$end*3969,min(rkd_selected$Date.of.diagnosis)))-1)], col=2, lty=2)
+}
+
+graphics:: par(new=TRUE)
+graphics::plot(0, xlim=c(min(rkd_selected$Date.of.diagnosis), max(rkd_selected$Date.of.diagnosis)), ylim=c(0, 60), col=0,
+               xlab=NA, ylab=NA, main=NA, axes=FALSE)
+for(k in 1:nrow(Res.Seg$SegK)){
+  graphics::lines(c(as.Date(Res.Seg$SegK$begin[k]*3969,min(rkd_selected$Date.of.diagnosis)), as.Date(Res.Seg$SegK$end[k]*3969,min(rkd_selected$Date.of.diagnosis))), (Res.Seg$SegK$lambda[k]*365/3969)*c(1, 1), col=2, lwd=2)
+}
+graphics::axis(side=4, col=2, col.ticks=2, col.axis=2)
+mtext("rate per year", side=4,col=2,line=-1)
+#dev.off()
+```
+
+The graphics above shows us that there is one change point at 64% of the timeline. This changepoint is on September 2019, few month before Covid19 hit Ireland. The inclusion rate pass from 1 patient every 7 days to 1 patient every 15 days.
+
+
+
+```{r}
+
+tau <- Res.Seg$SegK$end[-3]*(max(rkd_selected$Interval_in_day)+2)-1
+
+## Simulation -- removed for now 
+# n = length(rkd_selected$Interval_in_day)
+# tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+# x0 = cumsum(tsim1)
+# x0 <- x0[x0< tau]
+# tsim2 <- rexp(n - length(x0), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+# x0 <- c(x0, max(x0) + cumsum(tsim2))
+
+# plot(y = 1:length(rkd_selected$Interval_in_day), x = x0, type="s", lwd = 1,xlab="Interval in day", ylab="")
+
+
+tau <- Res.Seg$SegK$end[-3]*(max(rkd_selected$Interval_in_day)+2)-1
+tseq <- 1:max(rkd_selected$Interval_in_day)
+
+lambda1 <- (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1]
+lambda2 <- (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2]
+lambda3 <- (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[3]
+
+sel1 <- tseq<tau[1]
+sel2 <- tseq>=tau[1] & tseq<tau[2]
+sel3 <- tseq>=tau[2]
+
+tseq1 <- tseq[sel1]
+tseq2 <- tseq[sel2]
+tseq3 <- tseq[sel3]
+
+lambda1_star <- lambda1*max(tseq1)
+tstar2 <- min(tseq2) + 1
+tstar3 <- min(tseq3) + 1
+
+lambda2_star <- lambda1_star + lambda2*max(tseq2 - tstar2)
+
+plot(rkd_selected$Interval_in_day,1:length(rkd_selected$Date.of.diagnosis),type='s',col=1, lwd=3, main = "RIV data", ylab = "Number of events", xlab = "Interval (days)")
+## use this for RIV data 
+# plot(rkd_selected$Interval_in_day,1:length(rkd_selected$Date.of.diagnosis),type='s',col=1, lwd=3, main = "UKIVAS data", ylab = "Number of events", xlab = "Interval (days)")
+
+abline(v=tau, col="red")
+
+lines(tseq, c(lambda1*tseq1, lambda1_star + lambda2*(tseq2 - tstar2), lambda2_star +  lambda3*(tseq3 - tstar3)), lwd=1, col = 3)
+
+
+
+```
+
+
+The modelisation of the changepoint model through a exponential distribution works well.
+
+## Interval between diagnosis date
+
+We calculate the interval in days between the a diagnosis data and the following one.
+
+```{r, fig.width=10, fig.height=8}
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+
+```
+
+
+
+
+
+
+
+```{r}
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = T)
+SegK <- Res.Seg$SegK
+
+K <- length(SegK$end)
+tau_vec <- c(0, SegK$end)*(max(rkd_selected$Interval_in_day)+2)
+tau_vec[K+1] <- tau_vec[K+1] - 2
+# tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+n = length(rkd_selected$Interval_in_day)
+
+# tsim <- rep(0, n)
+simChDat <- function(SegK){
+  K <- length(SegK$lambda)
+  x0 <- 0
+  for(k in 1:K){
+    # sel_1 <- rkd_selected$Interval_in_day >= tau_vec[k]
+    # sel_2 <- rkd_selected$Interval_in_day < tau_vec[k+1]
+    # nk <- sum(sel_1 & sel_2)
+    # tsim1 <- rexp(n, (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])  
+    daily_lambda_k <- SegK$lambda[k] / (max(rkd_selected$Interval_in_day))
+    tsim <- rexp(n, daily_lambda_k)
+    sel <- (cumsum(tsim) + max(x0)) < tau_vec[k+1]
+    x0 = c(x0, max(x0) + cumsum(tsim[sel]))
+  }
+  # x0 <- x0[-1]
+  
+  # plot(y = 1:length(rkd_selected$Interval_in_day), x = x0, type="s", lwd = 1,xlab="Interval in day", ylab="")
+  # abline(v=tau_vec, col="red")
+  x0
+}
+
+x0 <- simChDat(SegK)
+
+nsim <- length(x0)
+
+x0mat <- replicate(1000, simChDat(SegK))
+x0 <- x0mat[[1]]
+nsim <- length(x0)
+plot(ecdf(round(diff(x0))), lwd = 1,xlab="Days", ylab="P(t < T)", col = 3, main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE)
+#abline(v=tau_vec, col="red")
+test2=quantile(ecdf(round(diff(x0))),seq(0,1,0.1))
+for(i in 2:1000){
+  
+  # tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+  # n = length(rkd_selected$Interval_in_day)
+  # tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+  # x = cumsum(tsim1)
+  # x <- x[x< tau]
+  # tsim2 <- rexp(n - length(x), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+  # x <- c(x, max(x) + cumsum(tsim2))
+  # lines(y = 1:n, x = x, type="s", col = 3)
+  
+  x0 <- x0mat[[i]]
+  nsim <- length(x0)
+  lines(ecdf(round(diff(x0))), col = 3, do.points = FALSE)
+  test2=rbind(test2,quantile(ecdf(round(diff(x0))),seq(0,1,0.1)))
+}
+test3=colMeans(test2)
+lines(ecdf(rkd_selected$Interval),col=1)
+```
+
+```{r}
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+ysim <- round(diff(x0))
+exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+c1 <- chisq.test(tab1, p = exp_sim)
+print(c1)
+barplot(c1$stdres)
+
+png("RIV MPA plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(round(diff(x0))), lwd = 1,xlab="Days", ylab="P(t < T)", col = 3, main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE,xlim=c(0,100))
+#abline(v=tau_vec, col="red")
+test2=quantile(ecdf(round(diff(x0))),seq(0,1,0.1))
+pvalue=NULL
+resi=NULL
+ysim <- round(diff(x0))
+exp_sim_total=table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+for(i in 2:1000){
+  
+  # tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+  # n = length(rkd_selected$Interval_in_day)
+  # tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+  # x = cumsum(tsim1)
+  # x <- x[x< tau]
+  # tsim2 <- rexp(n - length(x), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+  # x <- c(x, max(x) + cumsum(tsim2))
+  # lines(y = 1:n, x = x, type="s", col = 3)
+  
+  x0 <- x0mat[[i]]
+  nsim <- length(x0)
+  lines(ecdf(round(diff(x0))), col = "gray", do.points = FALSE)
+  test2=rbind(test2,quantile(ecdf(round(diff(x0))),seq(0,1,0.1)))
+  ysim <- round(diff(x0))
+  exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+  c1 <- chisq.test(tab1, p = exp_sim)
+  resi=rbind(resi, c1$stdres)
+  pvalue=c(pvalue, c1$p.value)
+  exp_sim_total=exp_sim_total+table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+
+}
+test3=colMeans(test2)
+lines(ecdf(rkd_selected$Interval),col=1)
+dev.off()
+boxplot(pvalue,main="distribution of the p-value of the Chi-squared test",outline=F)
+boxplot(resi, main= "distribution of the residual error of the Chi-squared test", outline=F)
+
+exp_sim_total=exp_sim_total/sum(exp_sim_total)
+print(exp_sim_total)
+print(tab1)
+c1_overall <- chisq.test(tab1, p = exp_sim_total)
+saveRDS(c1_overall, file="RIV MPA Chisq test")
+print(c1_overall)
+print(c1_overall$p.value)
+barplot(c1_overall$stdres, main = "Chi-squared test residuals")
+```
+
+
+
+# IDIBELL
+
+The objective is to detect pattern or trend in the recruitment of the patient
+
+```{r, fig.width=10, fig.height=8}
+library(ggplot2)
+library(knitr)
+library(CptPointProcess)
+library(IDIBELLpipeline)
+idibell_file <- "C:/Users/COQM/OneDrive - Trinity College Dublin/THKC - Matthieu Coq/Paradise data shared/Barcelona data/202133REGISTREVASCUL-PARADISEIdibellAllVa_DATA_LABELS_2024-04-30_1203.csv"
+idibell <- load_IDIBELL(idibell_file)
+split_idibell <- SplitIDIBELL(idibell, tempdir())
+
+rkd_filter <- split_idibell$Initial[which(split_idibell$Initial$X.Diagnosis.confidence..initial.assessment..=="Definite" & split_idibell$Initial$X.Small.vessel.vasculitis..ANCA.associated.. != "Eosinophilic granulomatosis with polyangiitis (Churg Strauss) - ORPHA:183"),]
+
+rkd_filter$date_of_diagnosis=as.Date(rkd_filter$X.Date.of.diagnosis..required.for.planning.treatment.)
+
+rkd_selected=rkd_filter[which(rkd_filter$date_of_diagnosis>=as.Date("2013-01-01")),]
+
+rkd_selected=rkd_selected[order(rkd_selected$date_of_diagnosis),]
+rkd_selected$X.Date.of.enrolment.=as.Date(rkd_selected$X.Date.of.enrolment.)
+rkd_selected$type.of.recruitment = NULL
+for (i in 1:nrow(rkd_selected)){
+  if(is.na(rkd_selected$X.Date.of.enrolment.[i])==F){
+    if(abs(rkd_selected$date_of_diagnosis[i] - rkd_selected$X.Date.of.enrolment.[i])>30 ){
+    rkd_selected$type.of.recruitment[i]="retrospective"
+  }else{
+    rkd_selected$type.of.recruitment[i]="prospective"
+  }
+  }
+  
+}
+
+
+png("IDIBELL cohort plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(rkd_selected$date_of_diagnosis,1:length(rkd_selected$date_of_diagnosis),type='s',ylab="", xlab="Date of Diagnosis")
+dev.off()
+
+rkd_selected$Interval_in_day=as.numeric(rkd_selected$date_of_diagnosis-rkd_selected$date_of_diagnosis[1])
+
+
+library(lubridate)
+
+barplot(table(day(rkd_selected$date_of_diagnosis)),main="Distribution of days")
+
+barplot(table(month(rkd_selected$date_of_diagnosis)),main="Distribution of months")
+
+barplot(table(year(rkd_selected$date_of_diagnosis)),main="Distribution of years")
+
+
+```
+
+The graphic above show the evolution of the diagnosis over time since 2013.
+
+## All patient
+
+```{r}
+rkd_selected=rkd_selected[which(rkd_selected$X.Small.vessel.vasculitis..ANCA.associated..=="Microscopic polyangiitis (including renal limited vasculitis) - ORPHA:727" ),]
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = F)
+plot(Res.Seg$Contrast + (1:10)*log(nrow(dat))) ## use BIC because cross-validation breaks for these data 
+
+
+```
+
+```{r}
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+B<- 1000 
+n <- length(rkd_selected$Interval)
+
+##generate and store 1000 CDFs using bootstrap method
+
+boot_mat <- matrix(0, nrow=100, ncol = 1000)
+xseq <- seq(0, max(rkd_selected$Interval), len = 100)
+
+for(b in 1:B){
+  boot_samp <- sample(1:n, replace=TRUE)
+  yboot <- rkd_selected$Interval[boot_samp]
+  rate_boot <- 1/mean(yboot)
+  
+  boot_mat[, b] <- pexp(xseq, rate = rate_boot)
+  }
+
+plot(ecdf(rkd_selected$Interval), col = 0)
+for(b in 1:B) lines(xseq, boot_mat[, b], col = "lightgray")
+lines (ecdf(rkd_selected$Interval), col = "red")
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = q1, include.lowest = TRUE))/length(rkd_selected$Interval)
+ysim <- round(boot_mat)
+exp_sim <- table(cut(ysim, breaks = q1, include.lowest = TRUE))/length(ysim)
+c1 <- chisq.test(tab1, p = exp_sim)
+print(c1)
+
+
+```
+
+```{r}
+library(lubridate)
+#generate and store 1000 CDFs using simulation method
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+B<- 1000 
+n <- length(rkd_selected$Interval)
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+# xseq <- seq(0, max(rkd_selected$Interval), len = 100)
+prop_imp <- round((0.407 - 12/365)*n)
+
+rate_est <- 1/mean(rkd_selected$Interval)
+nsim <- length(rkd_selected$Interval)
+boot_mat <- matrix(0, nrow=nsim, ncol = 1000)
+pvalue=NULL
+resi=NULL
+y_imp_mat <- matrix(0, nrow=nsim, ncol = 1000)
+for(b in 1:B){
+  # boot_samp <- sample(1:n, replace=TRUE)
+  # yboot <- rkd_selected$Interval[boot_samp]
+  # rate_boot <- 1/mean(yboot)
+  boot_mat[, b] <- rexp(nsim, rate = rate_est)
+  ysim <- round(boot_mat[, b])
+  
+  y_imp_mat[,b] <- ysim
+  exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+  c1 <- chisq.test(tab1, p = exp_sim)
+
+  resi=rbind(resi, c1$stdres)
+  pvalue=c(pvalue, c1$p.value)
+}
+png("IDIBELL MPA plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(rkd_selected$Interval), col = 0, ylab="P(t < T)", main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE)
+for(b in 1:B) lines(ecdf(round(y_imp_mat[, b])), col = "gray", do.points=FALSE)
+lines (ecdf(rkd_selected$Interval), col = "black")
+dev.off()
+
+boxplot(pvalue,main="distribution of the p-value of the Chi-squared test",outline=F)
+boxplot(resi, main= "distribution of the residual error of the Chi-squared test", outline=F)
+
+plot(ecdf(rkd_selected$Interval), col = 0, ylab="P(t < T)", main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE,xlim=c(0,100))
+for(b in 1:B) lines(ecdf(round(boot_mat[, b])), col = 3, do.points=FALSE)
+lines (ecdf(rkd_selected$Interval), col = "blue")
+
+exp_sim_total <- table(cut(y_imp_mat, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(y_imp_mat)
+print(exp_sim_total)
+print(tab1)
+c1_overall <- chisq.test(tab1, p = exp_sim_total)
+saveRDS(c1_overall, file="Barcelona MPA Chisq test")
+print(c1_overall$p.value)
+print(c1_overall)
+barplot(c1_overall$stdres, main = "Chi-squared test residuals")
+```
+
+# Norwich
+
+The objective is to detect pattern or trend in the recruitment of the patient
+
+```{r, fig.width=10, fig.height=8}
+library(ggplot2)
+library(knitr)
+library(CptPointProcess)
+rkd <- read.csv("C:/Users/COQM/OneDrive - Trinity College Dublin/THKC - Matthieu Coq/Diagnosis Date analysis/Norwich cohort/Norwich data for Mark.csv")
+
+rkd_filter <- rkd
+
+rkd_filter$DOD=as.Date(rkd_filter$DOD, tryFormats =  "%d/%m/%Y")
+
+rkd_selected=rkd_filter[which(is.na(rkd_filter$Recode.by.date) == FALSE),]
+
+rkd_selected=rkd_selected[order(rkd_selected$DOD),]
+
+png("Norwich cohort plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(rkd_selected$DOD,1:length(rkd_selected$DOD),type='s',ylab="", xlab="Date of Diagnosis")
+dev.off()
+
+
+
+library(lubridate)
+
+barplot(table(day(rkd_selected$DOD)),main="Distribution of days")
+
+barplot(table(month(rkd_selected$DOD)),main="Distribution of months")
+
+barplot(table(year(rkd_selected$DOD)),main="Distribution of years")
+
+
+rkd_selected$Interval_in_day=as.numeric(rkd_selected$DOD-rkd_selected$DOD[1])
+rkd_selected=rkd_selected[which(rkd_selected$Diagnosis=="MPA"),]
+
+```
+
+The graphic above show the evolution of the diagnosis over time since 2013.
+
+
+```{r}
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = F)
+plot(Res.Seg$Contrast + (1:10)*log(nrow(dat))) ## use BIC because cross-validation breaks for these data 
+
+```
+
+## All patient
+
+```{r}
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+B<- 1000 
+n <- length(rkd_selected$Interval)
+
+##generate and store 1000 CDFs using bootstrap method
+
+boot_mat <- matrix(0, nrow=100, ncol = 1000)
+xseq <- seq(0, max(rkd_selected$Interval), len = 100)
+
+for(b in 1:B){
+  boot_samp <- sample(1:n, replace=TRUE)
+  yboot <- rkd_selected$Interval[boot_samp]
+  rate_boot <- 1/mean(yboot)
+  
+  boot_mat[, b] <- pexp(xseq, rate = rate_boot)
+  }
+
+plot(ecdf(rkd_selected$Interval), col = 0)
+for(b in 1:B) lines(xseq, boot_mat[, b], col = "lightgray")
+lines (ecdf(rkd_selected$Interval), col = "red")
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = q1, include.lowest = TRUE))/length(rkd_selected$Interval)
+ysim <- round(boot_mat)
+exp_sim <- table(cut(ysim, breaks = q1, include.lowest = TRUE))/length(ysim)
+c1 <- chisq.test(tab1, p = exp_sim)
+print(c1)
+```
+
+```{r}
+library(lubridate)
+#generate and store 1000 CDFs using simulation method
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+B<- 1000 
+n <- length(rkd_selected$Interval)
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+# xseq <- seq(0, max(rkd_selected$Interval), len = 100)
+prop_imp <- round((0.407 - 12/365)*n)
+
+rate_est <- 1/mean(rkd_selected$Interval)
+nsim <- length(rkd_selected$Interval)
+boot_mat <- matrix(0, nrow=nsim, ncol = 1000)
+pvalue=NULL
+resi=NULL
+y_imp_mat <- matrix(0, nrow=nsim, ncol = 1000)
+for(b in 1:B){
+  # boot_samp <- sample(1:n, replace=TRUE)
+  # yboot <- rkd_selected$Interval[boot_samp]
+  # rate_boot <- 1/mean(yboot)
+  boot_mat[, b] <- rexp(nsim, rate = rate_est)
+  ysim <- round(boot_mat[, b])
+  
+  y_imp_mat[,b] <- ysim
+  exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+  c1 <- chisq.test(tab1, p = exp_sim)
+
+  resi=rbind(resi, c1$stdres)
+  pvalue=c(pvalue, c1$p.value)
+}
+png("Norwich MPA plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(rkd_selected$Interval), col = 0, ylab="P(t < T)", xlab="Days", main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE)
+for(b in 1:B) lines(ecdf(round(y_imp_mat[, b])), col = "gray", do.points=FALSE)
+lines (ecdf(rkd_selected$Interval), col = "black")
+dev.off()
+boxplot(pvalue,main="distribution of the p-value of the Chi-squared test",outline=F)
+boxplot(resi, main= "distribution of the residual error of the Chi-squared test", outline=F)
+
+plot(ecdf(rkd_selected$Interval), col = 0,xlab="Days", ylab="P(t < T)", main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE,xlim=c(0,100))
+for(b in 1:B) lines(ecdf(round(boot_mat[, b])), col = 3, do.points=FALSE)
+lines (ecdf(rkd_selected$Interval), col = "blue")
+
+exp_sim_total <- table(cut(y_imp_mat, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(y_imp_mat)
+print(exp_sim_total)
+print(tab1)
+c1_overall <- chisq.test(tab1, p = exp_sim_total)
+saveRDS(c1_overall, file="Norwich MPA Chisq test")
+print(c1_overall$p.value)
+print(c1_overall)
+barplot(c1_overall$stdres, main = "Chi-squared test residuals")
+```
+
+# Prague
+
+The objective is to detect pattern or trend in the recruitment of the patient
+
+```{r, fig.width=10, fig.height=8}
+library(ggplot2)
+library(knitr)
+library(CptPointProcess)
+rkd <- read.csv("C:/Users/COQM/OneDrive - Trinity College Dublin/THKC - Matthieu Coq/Diagnosis Date analysis/Prague/fvc_diagnoses3.csv")
+
+rkd_filter <- rkd
+
+rkd_filter$dateofdiagnosis=as.Date(rkd_filter$dateofdiagnosis, tryFormats =  "%d/%m/%y")
+
+rkd_selected=rkd_filter[which(rkd_filter$dia != " EMPA"),]
+
+rkd_selected=rkd_selected[order(rkd_selected$dateofdiagnosis),]
+
+plot(rkd_selected$dateofdiagnosis,1:length(rkd_selected$dateofdiagnosis),type='s',ylab="", xlab="Date of Diagnosis")
+
+
+
+
+library(lubridate)
+
+barplot(table(day(rkd_selected$dateofdiagnosis)),main="Distribution of days")
+
+barplot(table(month(rkd_selected$dateofdiagnosis)),main="Distribution of months")
+
+barplot(table(year(rkd_selected$dateofdiagnosis)),main="Distribution of years")
+
+barplot(table(rkd_selected$status,day(rkd_selected$dateofdiagnosis)),col=rainbow(2))
+
+barplot(table(rkd_selected$status,year(rkd_selected$dateofdiagnosis)),col=rainbow(2))
+
+rkd_selected=rkd_selected[which(rkd_selected$status == " Prospective "),]
+
+png("Prague cohort plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(rkd_selected$dateofdiagnosis,1:length(rkd_selected$dateofdiagnosis),type='s',ylab="", xlab="Date of Diagnosis")
+dev.off()
+
+rkd_selected$Interval_in_day=as.numeric(rkd_selected$dateofdiagnosis-rkd_selected$dateofdiagnosis[1])
+rkd_selected=rkd_selected[which(rkd_selected$dia==" MPA"),]
+```
+
+The graphic above show the evolution of the diagnosis over time since 2013.
+
+## All patient
+
+```{r}
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = F)
+plot(Res.Seg$Contrast + (1:10)*log(nrow(dat)))
+
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = T)
+Res.Seg$SegK
+
+png("Prague MPA changepoint plot.png", width = 6, height = 6, units = 'in', res = 3000)
+graphics::par(new=FALSE)
+plot(rkd_selected$dateofdiagnosis,1:length(rkd_selected$dateofdiagnosis),type='s',ylab="Number of patient included", xlab="Date of Diagnosis")
+points(rkd_selected$date_of_diagnosis, rep(0,length(rkd_selected$date_of_diagnosis)),pch=20)
+d_range <- as.numeric( max(rkd_selected$dateofdiagnosis) - min(rkd_selected$dateofdiagnosis) )
+
+if (nrow(Res.Seg$SegK)!=1){
+  # graphics::abline(v=as.Date(Res.Seg$SegK$end*3802,min(rkd_selected$dateofdiagnosis))[1:(length(as.Date(Res.Seg$SegK$end*3802,min(rkd_selected$dateofdiagnosis)))-1)], col=2, lty=2)
+  graphics::abline(v=as.Date(Res.Seg$SegK$end*d_range ,min(rkd_selected$dateofdiagnosis))[1:(length(as.Date(Res.Seg$SegK$end*d_range ,min(rkd_selected$dateofdiagnosis)))-1)], col=2, lty=2)
+}
+
+graphics:: par(new=TRUE)
+graphics::plot(0, xlim=c(min(rkd_selected$dateofdiagnosis), max(rkd_selected$dateofdiagnosis)), ylim=c(0, 60), col=0,
+               xlab=NA, ylab=NA, main=NA, axes=FALSE)
+for(k in 1:nrow(Res.Seg$SegK)){
+  
+  # graphics::lines(c(as.Date(Res.Seg$SegK$begin[k]*3802,min(rkd_selected$dateofdiagnosis)), as.Date(Res.Seg$SegK$end[k]*3802,min(rkd_selected$dateofdiagnosis))), (Res.Seg$SegK$lambda[k]*365/3802)*c(1, 1), col=2, lwd=2)
+  graphics::lines(c(as.Date(Res.Seg$SegK$begin[k]*d_range,min(rkd_selected$dateofdiagnosis)), as.Date(Res.Seg$SegK$end[k]*d_range,min(rkd_selected$dateofdiagnosis))), (Res.Seg$SegK$lambda[k]*365/d_range)*c(1, 1), col=2, lwd=2)
+}
+
+graphics::axis(side=4, col=2, col.ticks=2, col.axis=2)
+mtext("rate per year", side=4,col=2,line=-1)
+dev.off()
+```
+
+```{r}
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+
+```
+
+The graphics above show the evolution of diagnosis over time and changepoint in the incidence over time. At the end of 2021, we see a increase of the incidence.
+
+
+```{r}
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = T)
+SegK <- Res.Seg$SegK
+
+K <- length(SegK$end)
+tau_vec <- c(0, SegK$end)*(max(rkd_selected$Interval_in_day)+2)
+tau_vec[K+1] <- tau_vec[K+1] - 2
+# tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+n = length(rkd_selected$Interval_in_day)
+
+# tsim <- rep(0, n)
+simChDat <- function(SegK){
+  K <- length(SegK$lambda)
+  x0 <- 0
+  for(k in 1:K){
+    # sel_1 <- rkd_selected$Interval_in_day >= tau_vec[k]
+    # sel_2 <- rkd_selected$Interval_in_day < tau_vec[k+1]
+    # nk <- sum(sel_1 & sel_2)
+    # tsim1 <- rexp(n, (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])  
+    daily_lambda_k <- SegK$lambda[k] / (max(rkd_selected$Interval_in_day))
+    tsim <- rexp(n, daily_lambda_k)
+    sel <- (cumsum(tsim) + max(x0)) < tau_vec[k+1]
+    x0 = c(x0, max(x0) + cumsum(tsim[sel]))
+  }
+  # x0 <- x0[-1]
+  
+  # plot(y = 1:length(rkd_selected$Interval_in_day), x = x0, type="s", lwd = 1,xlab="Interval in day", ylab="")
+  # abline(v=tau_vec, col="red")
+  x0
+}
+
+x0 <- simChDat(SegK)
+
+nsim <- length(x0)
+nsim
+x0mat <- replicate(1000, simChDat(SegK))
+x0 <- x0mat[[1]]
+nsim <- length(x0)
+plot(ecdf(round(diff(x0))), lwd = 1,xlab="Days", ylab="P(t < T)", col = 3, main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE)
+#abline(v=tau_vec, col="red")
+
+for(i in 2:1000){
+  
+  # tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+  # n = length(rkd_selected$Interval_in_day)
+  # tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+  # x = cumsum(tsim1)
+  # x <- x[x< tau]
+  # tsim2 <- rexp(n - length(x), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+  # x <- c(x, max(x) + cumsum(tsim2))
+  # lines(y = 1:n, x = x, type="s", col = 3)
+  
+  x0 <- x0mat[[i]]
+  nsim <- length(x0)
+  lines(ecdf(round(diff(x0))), col = 3, do.points = FALSE)
+}
+
+lines(ecdf(rkd_selected$Interval),col=1)
+
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+
+x0mat <- replicate(1000, simChDat(SegK))
+x0 <- x0mat[[1]]
+nsim <- length(x0)
+png("Prague MPA plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(round(diff(x0))), lwd = 1,xlab="Days", ylab="P(t < T)", col = 3, main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE,xlim=c(0,100))
+#abline(v=tau_vec, col="red")
+pvalue=NULL
+resi=NULL
+ysim <- round(diff(x0))
+exp_sim_total=table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+for(i in 2:1000){
+  
+  # tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+  # n = length(rkd_selected$Interval_in_day)
+  # tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+  # x = cumsum(tsim1)
+  # x <- x[x< tau]
+  # tsim2 <- rexp(n - length(x), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+  # x <- c(x, max(x) + cumsum(tsim2))
+  # lines(y = 1:n, x = x, type="s", col = 3)
+  
+  x0 <- x0mat[[i]]
+  nsim <- length(x0)
+  lines(ecdf(round(diff(x0))), col = "gray", do.points = FALSE)
+  ysim <- round(diff(x0))
+  exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+  c1 <- chisq.test(tab1, p = exp_sim)
+  resi=rbind(resi, c1$stdres)
+  pvalue=c(pvalue, c1$p.value)
+  exp_sim_total=exp_sim_total+table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+
+}
+
+lines(ecdf(rkd_selected$Interval),col=1)
+dev.off()
+boxplot(pvalue,main="distribution of the p-value of the Chi-squared test",outline=F)
+boxplot(resi, main= "distribution of the residual error of the Chi-squared test", outline=F)
+
+exp_sim_total=exp_sim_total/sum(exp_sim_total)
+print(exp_sim_total)
+print(tab1)
+c1_overall <- chisq.test(tab1, p = exp_sim_total)
+saveRDS(c1_overall, file="Prague MPA Chisq test")
+print(c1_overall$p.value)
+print(c1_overall)
+barplot(c1_overall$stdres, main = "Chi-squared test residuals")
+
+```
+
+# Skane
+
+The objective is to detect pattern or trend in the recruitment of the patient
+
+```{r, fig.width=10, fig.height=8}
+library(ggplot2)
+library(knitr)
+library(CptPointProcess)
+# rkd <- read.csv("C:/Users/Administrator/OneDrive - Trinity College Dublin/Matthieu Coq/Diagnosis Date analysis/Skane cohort/skane_dublin_transfer.csv")
+rkd <- read.csv("Skane cohort/skane_dublin_transfer_post2007_update.csv")
+
+rkd_filter <- rkd
+
+rkd_filter$dateOfDiagnosis=as.Date(rkd_filter$dateOfDiagnosis)
+
+rkd_selected=rkd_filter[which(rkd_filter$dateOfDiagnosis>=as.Date("1913-01-01")),]
+
+rkd_selected=rkd_selected[order(rkd_selected$dateOfDiagnosis),]
+
+png("Skane cohort plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(rkd_selected$dateOfDiagnosis,1:length(rkd_selected$dateOfDiagnosis),type='s',ylab="", xlab="Date of Diagnosis")
+dev.off()
+
+rkd_selected$Interval_in_day=as.numeric(rkd_selected$dateOfDiagnosis-rkd_selected$dateOfDiagnosis[1])
+
+library(lubridate)
+
+barplot(table(day(rkd_selected$dateOfDiagnosis)),main="Distribution of days")
+
+barplot(table(month(rkd_selected$dateOfDiagnosis)),main="Distribution of months")
+
+barplot(table(year(rkd_selected$dateOfDiagnosis)),main="Distribution of years")
+
+rkd_selected= rkd_selected[which(rkd_selected$diagnosis=="MPA"),]
+
+```
+
+## All patient
+
+```{r}
+
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = F)
+plot(Res.Seg$Contrast + (1:10)*log(nrow(dat))) ## use BIC because cross-validation breaks for these data 
+
+
+```
+
+
+```{r}
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+B<- 1000 
+n <- length(rkd_selected$Interval)
+
+##generate and store 1000 CDFs using bootstrap method
+
+boot_mat <- matrix(0, nrow=100, ncol = 1000)
+xseq <- seq(0, max(rkd_selected$Interval), len = 100)
+
+for(b in 1:B){
+  boot_samp <- sample(1:n, replace=TRUE)
+  yboot <- rkd_selected$Interval[boot_samp]
+  rate_boot <- 1/mean(yboot)
+  
+  boot_mat[, b] <- pexp(xseq, rate = rate_boot)
+  }
+
+plot(ecdf(rkd_selected$Interval), col = 0)
+for(b in 1:B) lines(xseq, boot_mat[, b], col = "lightgray")
+lines (ecdf(rkd_selected$Interval), col = "red")
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = q1, include.lowest = TRUE))/length(rkd_selected$Interval)
+ysim <- round(boot_mat)
+exp_sim <- table(cut(ysim, breaks = q1, include.lowest = TRUE))/length(ysim)
+c1 <- chisq.test(tab1, p = exp_sim)
+print(c1)
+
+
+```
+
+```{r}
+library(lubridate)
+#generate and store 1000 CDFs using simulation method
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+B<- 1000 
+n <- length(rkd_selected$Interval)
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+# xseq <- seq(0, max(rkd_selected$Interval), len = 100)
+prop_imp <- round((0.407 - 12/365)*n)
+
+rate_est <- 1/mean(rkd_selected$Interval)
+nsim <- length(rkd_selected$Interval)
+boot_mat <- matrix(0, nrow=nsim, ncol = 1000)
+pvalue=NULL
+resi=NULL
+y_imp_mat <- matrix(0, nrow=nsim, ncol = 1000)
+for(b in 1:B){
+  # boot_samp <- sample(1:n, replace=TRUE)
+  # yboot <- rkd_selected$Interval[boot_samp]
+  # rate_boot <- 1/mean(yboot)
+  boot_mat[, b] <- rexp(nsim, rate = rate_est)
+  ysim <- round(boot_mat[, b])
+  
+  y_imp_mat[,b] <- ysim
+  exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+  c1 <- chisq.test(tab1, p = exp_sim)
+
+  resi=rbind(resi, c1$stdres)
+  pvalue=c(pvalue, c1$p.value)
+}
+png("Skane MPA plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(rkd_selected$Interval), col = 0, ylab="P(t < T)", main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE)
+for(b in 1:B) lines(ecdf(round(y_imp_mat[, b])), col = "gray", do.points=FALSE)
+lines (ecdf(rkd_selected$Interval), col = 1)
+dev.off()
+
+boxplot(pvalue,main="distribution of the p-value of the Chi-squared test",outline=F)
+boxplot(resi, main= "distribution of the residual error of the Chi-squared test", outline=F)
+
+#png("Skane MPA plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(rkd_selected$Interval), col = 0,xlab="Days", ylab="P(t < T)", main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE,xlim=c(0,100))
+for(b in 1:B) lines(ecdf(round(boot_mat[, b])), col = 3, do.points=FALSE)
+lines (ecdf(rkd_selected$Interval), col = "blue")
+#dev.off
+
+exp_sim_total <- table(cut(y_imp_mat, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(y_imp_mat)
+print(exp_sim_total)
+print(tab1)
+c1_overall <- chisq.test(tab1, p = exp_sim_total)
+saveRDS(c1_overall, file="Skane MPA Chisq test")
+print(c1_overall$p.value)
+print(c1_overall)
+barplot(c1_overall$stdres, main = "Chi-squared test residuals")
+```
+
+# UKIVAS
+
+The objective is to detect pattern or trend in the recruitment of the patient
+
+```{r, fig.width=10, fig.height=8}
+library(ggplot2)
+library(knitr)
+library(CptPointProcess)
+library(lubridate)
+rkd <- read.csv("UKIVAS/GPA MPA Now All Diag Data.csv")
+
+rkd_filter <- rkd
+
+rkd_filter$DiagDt=as.Date(rkd_filter$DiagDt)
+rkd_filter$EnrolDt=as.Date(rkd_filter$EnrolDt, format="%d/%m/%Y")
+rkd_selected=rkd_filter[-which(is.na(rkd_filter$DiagDt)==T |rkd_filter$DiagDt<"2012-09-01"),]
+
+rkd_selected=rkd_selected[order(rkd_selected$DiagDt),]
+
+rkd_selected$type.of.recruitment = NULL
+for (i in 1:nrow(rkd_selected)){
+  if(is.na(rkd_selected$EnrolDt[i])==F){
+    if(abs(rkd_selected$DiagDt[i] - rkd_selected$EnrolDt[i])>30 ){
+    rkd_selected$type.of.recruitment[i]="retrospective"
+  }else{
+    rkd_selected$type.of.recruitment[i]="prospective"
+  }
+  }
+  
+}
+
+plot(rkd_selected$DiagDt,1:length(rkd_selected$DiagDt),type='s',ylab="", xlab="Date of Diagnosis")
+
+
+library(lubridate)
+
+barplot(table(day(rkd_selected$DiagDt)),main="Distribution of days")
+
+barplot(table(month(rkd_selected$DiagDt)),main="Distribution of months")
+
+barplot(table(year(rkd_selected$DiagDt)),main="Distribution of years")
+
+
+barplot(table(rkd_selected$type.of.recruitment,day(rkd_selected$DiagDt)),col=rainbow(2))
+
+barplot(table(rkd_selected$type.of.recruitment,year(rkd_selected$DiagDt)),col=rainbow(2))
+
+rkd_selected=rkd_selected[which(rkd_selected$type.of.recruitment == "prospective"),]
+
+png("UKIVAS cohort plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(rkd_selected$DiagDt,1:length(rkd_selected$DiagDt),type='s',ylab="", xlab="Date of Diagnosis")
+dev.off()
+rkd_selected$Interval_in_day=as.numeric(rkd_selected$DiagDt-rkd_selected$DiagDt[1])
+rkd_selected=rkd_selected[which(rkd_selected$DIAGNOW==1),]
+
+```
+
+The graphic above show the evolution of the diagnosis over time since 2013.
+
+
+```{r}
+dat=as.data.frame(cbind((rkd_selected$Interval_in_day+1)/(max(rkd_selected$Interval_in_day)+2), 1:length(rkd_selected$Interval_in_day)))
+colnames(dat)=c("times", "marks")
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = F)
+plot(Res.Seg$Contrast + (1:10)*log(nrow(dat))) ## use BIC because cross-validation breaks for these data 
+
+
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = T)
+Res.Seg$SegK
+
+png("UKIVAS MPA changepoint plot.png", width = 6, height = 6, units = 'in', res = 3000)
+graphics::par(new=FALSE)
+plot(rkd_selected$DiagDt,1:length(rkd_selected$DiagDt),type='s',ylab="Number of patient included", xlab="Date of Diagnosis")
+points(rkd_selected$DiagDt, rep(0,length(rkd_selected$DiagDt)),pch=20)
+if (nrow(Res.Seg$SegK)!=1){
+  graphics::abline(v=as.Date(Res.Seg$SegK$end*4075,min(rkd_selected$DiagDt))[1:(length(as.Date(Res.Seg$SegK$end*4075,min(rkd_selected$DiagDt)))-1)], col=2, lty=2)
+}
+
+graphics:: par(new=TRUE)
+graphics::plot(0, xlim=c(min(rkd_selected$DiagDt), max(rkd_selected$DiagDt)), ylim=c(0, 300), col=0,
+               xlab=NA, ylab=NA, main=NA, axes=FALSE)
+for(k in 1:nrow(Res.Seg$SegK)){
+  graphics::lines(c(as.Date(Res.Seg$SegK$begin[k]*4075,min(rkd_selected$DiagDt)), as.Date(Res.Seg$SegK$end[k]*4075,min(rkd_selected$DiagDt))), (Res.Seg$SegK$lambda[k]*365/4075)*c(1, 1), col=2, lwd=2)
+}
+graphics::axis(side=4, col=2, col.ticks=2, col.axis=2)
+mtext("rate per year", side=4,col=2,line=-1)
+dev.off()
+```
+```{r}
+rkd_selected$Interval=c(0,diff(rkd_selected$Interval_in_day))
+
+```
+
+The graphics above show the evolution of diagnosis over time and changepoint in the incidence over time. At the end of 2021, we see a increase of the incidence.
+
+
+```{r}
+Res.Seg=CptPointProcess(dat, Kmax=10, selection = T)
+SegK <- Res.Seg$SegK
+
+K <- length(SegK$end)
+tau_vec <- c(0, SegK$end)*(max(rkd_selected$Interval_in_day)+2)
+tau_vec[K+1] <- tau_vec[K+1] - 2
+# tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+n = length(rkd_selected$Interval_in_day)
+
+# tsim <- rep(0, n)
+simChDat <- function(SegK){
+  K <- length(SegK$lambda)
+  x0 <- 0
+  for(k in 1:K){
+    # sel_1 <- rkd_selected$Interval_in_day >= tau_vec[k]
+    # sel_2 <- rkd_selected$Interval_in_day < tau_vec[k+1]
+    # nk <- sum(sel_1 & sel_2)
+    # tsim1 <- rexp(n, (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])  
+    daily_lambda_k <- SegK$lambda[k] / (max(rkd_selected$Interval_in_day))
+    tsim <- rexp(n, daily_lambda_k)
+    sel <- (cumsum(tsim) + max(x0)) < tau_vec[k+1]
+    x0 = c(x0, max(x0) + cumsum(tsim[sel]))
+  }
+  # x0 <- x0[-1]
+  
+  # plot(y = 1:length(rkd_selected$Interval_in_day), x = x0, type="s", lwd = 1,xlab="Interval in day", ylab="")
+  # abline(v=tau_vec, col="red")
+  x0
+}
+
+x0 <- simChDat(SegK)
+
+y1 <- ecdf(rkd_selected$Interval)
+q1 <- quantile(y1, rep(0:10)/10)
+q1[which.max(q1)] <- 1e6
+q1 <- unique(round(q1))
+tab1 <- table(cut(rkd_selected$Interval, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+
+nsim <- length(x0)
+prop_imp <- round((0.223 - 12/365)*n)
+x0mat <- replicate(1000, simChDat(SegK))
+x0 <- x0mat[[1]]
+nsim <- length(x0)
+png("UKIVAS MPA plot.png", width = 6, height = 6, units = 'in', res = 3000)
+plot(ecdf(diff(x0)), lwd = 1,xlab="Days", ylab="P(t < T)", col = 0, main = "Cumulative distribution of days between diagnosis events", cex.main=0.7, do.points = FALSE)
+#abline(v=tau_vec, col="red")
+resi=NULL
+pvalue=NULL
+ysim <- round(diff(x0))
+exp_sim_total=table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+for(i in 2:1000){
+  
+  # tau <- Res.Seg$SegK$end[1]*(max(rkd_selected$Interval_in_day)+2)-1
+  # n = length(rkd_selected$Interval_in_day)
+  # tsim1 <- rexp(length(rkd_selected$Interval_in_day), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[1])
+  # x = cumsum(tsim1)
+  # x <- x[x< tau]
+  # tsim2 <- rexp(n - length(x), (Res.Seg$SegK$lambda / (max(rkd_selected$Interval_in_day)+2))[2])
+  # x <- c(x, max(x) + cumsum(tsim2))
+  # lines(y = 1:n, x = x, type="s", col = 3)
+  
+  x0 <- x0mat[[i]]
+  nsim <- length(x0)
+  
+  
+  lines(ecdf(diff(x0)), col = "gray", do.points = FALSE)
+  
+  ysim <- round(diff(x0))
+  y0 <- ysim
+  x0 <- as.Date(cumsum(c(0, y0)), origin = "2012-09-01")
+    s1 <- sample(1:nsim, size = prop_imp) 
+  mday(x0)[s1] <- 1
+  y1 <- as.numeric(x0) - as.numeric(as.Date(0, origin = "2012-09-01"))
+  y1 <- sort(y1)
+  y1 <- diff(y1)
+  
+  exp_sim <- table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))/length(ysim)
+  c1 <- chisq.test(tab1, p = exp_sim)
+  resi=rbind(resi, c1$stdres)
+  pvalue=c(pvalue, c1$p.value)
+   exp_sim_total=exp_sim_total+table(cut(ysim, breaks = c(0,3,7,14,21,1e6), include.lowest = TRUE))
+}
+
+lines(ecdf(rkd_selected$Interval),col=1)
+dev.off()
+
+boxplot(pvalue,main="distribution of the p-value of the Chi-squared test",outline=F)
+boxplot(resi, main= "distribution of the residual error of the Chi-squared test", outline=F)
+
+exp_sim_total=exp_sim_total/sum(exp_sim_total)
+print(exp_sim_total)
+print(tab1)
+c1_overall <- chisq.test(tab1, p = exp_sim_total)
+saveRDS(c1_overall, file="UKIVAS MPA Chisq test")
+print(c1_overall$p.value)
+barplot(c1_overall$stdres, main = "Chi-squared test residuals")
+
+```
